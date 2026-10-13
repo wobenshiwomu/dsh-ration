@@ -515,6 +515,36 @@ export function createRation({ ctx, config, deps = {} }) {
     return { kind: 'error', text: USAGE }
   }
 
+  // —— 跨插件接口（v0.1.2：dsh-plan 等消费方用） ——
+
+  /** 直接设置额度（运行时改值，落盘）；返回 { ok, caps } 或 { ok:false, code }。 */
+  function setCaps(input) {
+    const patch = {}
+    if (typeof input?.cap5h === 'number' && Number.isFinite(input.cap5h) && input.cap5h > 0) patch.cap5h = Math.round(input.cap5h)
+    if (typeof input?.capWeek === 'number' && Number.isFinite(input.capWeek) && input.capWeek > 0) patch.capWeek = Math.round(input.capWeek)
+    if (Object.keys(patch).length === 0) return { ok: false, code: 'bad-input' }
+    Object.assign(state.runtime, patch)
+    dirty = true
+    saveNow()
+    const cfg = effectiveConfig()
+    return { ok: true, caps: { h5: cfg.cap5h, week: cfg.capWeek } }
+  }
+
+  /** 读当前额度（跨插件查询用）。 */
+  function getCaps() {
+    const cfg = effectiveConfig()
+    return { h5: cfg.cap5h, week: cfg.capWeek, enforce: cfg.enforce === true }
+  }
+
+  function serviceApi() {
+    return {
+      version: '0.1.2',
+      setCaps,
+      getCaps,
+      status: () => status(),
+    }
+  }
+
   // —— 路由 ——
 
   function sendJson(res, code, payload) {
@@ -523,12 +553,34 @@ export function createRation({ ctx, config, deps = {} }) {
     res.end(body)
   }
 
+  function readBody(req) {
+    return new Promise((resolve, reject) => {
+      let data = ''
+      req.on('data', (chunk) => {
+        data += chunk
+        if (data.length > 1 << 20) reject(new Error('body too large'))
+      })
+      req.on('end', () => resolve(data))
+      req.on('error', reject)
+    })
+  }
+
   async function routeHandler(req, res) {
     try {
       const url = new URL(req.url ?? ROUTE_PREFIX, 'http://localhost')
       const route = url.pathname
       if (route === `${ROUTE_PREFIX}/state` && (req.method ?? 'GET') === 'GET') {
         return sendJson(res, 200, status())
+      }
+      if (route === `${ROUTE_PREFIX}/set` && req.method === 'POST') {
+        let body
+        try {
+          body = JSON.parse((await readBody(req)) || '{}')
+        } catch {
+          return sendJson(res, 400, { ok: false, code: 'bad-json' })
+        }
+        const result = setCaps(body)
+        return sendJson(res, result.ok ? 200 : 400, result)
       }
       if (route === `${ROUTE_PREFIX}/health`) {
         return sendJson(res, 200, { ok: true, name: 'dsh-ration', records: state.records.length, storage: storageDir })
@@ -573,6 +625,13 @@ export function createRation({ ctx, config, deps = {} }) {
         handler: cmdRation,
       })
     }, 'dsh-ration: commands')
+
+    // 跨插件服务（v0.1.2：dsh-plan 等经 ctx.inject(['ration']) 消费）
+    try {
+      ctx.provide('ration', serviceApi())
+    } catch (error) {
+      ctx.logger.warn(`[dsh-ration] 服务提供失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
     // 回填（等服务就绪；懒注入，headless 几何下自动跳过）
     try {

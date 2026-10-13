@@ -75,6 +75,20 @@ function usageEvent(seq, time, u) {
   return { type: 'assistant/message', seq, time, data: { usage: u } }
 }
 
+/** 假 req（支持 POST body）。 */
+function makeReq({ method = 'GET', url = `${ROUTE_PREFIX}/health`, body = '' } = {}) {
+  const req = { method, url, _l: {} }
+  req.on = (ev, cb) => {
+    req._l[ev] = cb
+    return req
+  }
+  setImmediate(() => {
+    if (body !== '' && req._l.data) req._l.data(Buffer.from(body, 'utf8'))
+    if (req._l.end) req._l.end()
+  })
+  return req
+}
+
 /** 假 ctx + 假 sessionPersistence。 */
 function makeEnv({ storageDir = null, store = null, config = {} } = {}) {
   const dir = storageDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'ration-sim-'))
@@ -83,6 +97,7 @@ function makeEnv({ storageDir = null, store = null, config = {} } = {}) {
   const routes = []
   const logs = []
   const opened = []
+  const provided = {}
   const persistence = store ?? {
     list: async () => [],
     open: async (id) => ({
@@ -95,6 +110,10 @@ function makeEnv({ storageDir = null, store = null, config = {} } = {}) {
     logger: {
       info: (m) => logs.push(['info', m]),
       warn: (m) => logs.push(['warn', m]),
+    },
+    provide: (name, value) => {
+      provided[name] = value
+      return () => {}
     },
     on: (ev, fn) => {
       ;(listeners[ev] ??= []).push(fn)
@@ -139,7 +158,7 @@ function makeEnv({ storageDir = null, store = null, config = {} } = {}) {
     warnPct: 0.8, keepDays: 35, storageDir: dir,
     ...config,
   }
-  return { ctx, cfg, dir, listeners, commands, routes, logs, persistence, opened }
+  return { ctx, cfg, dir, listeners, commands, routes, logs, persistence, opened, provided }
 }
 
 function emit(env, sid, event) {
@@ -366,6 +385,44 @@ group('⑤ HTTP 路由')
   const res3 = makeRes()
   await rt._route({ method: 'GET', url: `${ROUTE_PREFIX}/nope` }, res3)
   eq('未知路由 404', res3.status, 404)
+}
+
+// ---------------------------------------------------------------------------
+// ⑤.5 跨插件接口（v0.1.2：service + POST /set）
+// ---------------------------------------------------------------------------
+
+group('⑤.5 跨插件接口')
+{
+  const env = makeEnv()
+  const rt = createRation({ ctx: env.ctx, config: env.cfg })
+  rt.start({ autoBackfill: false })
+
+  okIf('已提供 ration 服务', typeof env.provided.ration === 'object' && env.provided.ration !== null)
+  const svc = env.provided.ration
+  eq('服务版本', svc.version, '0.1.2')
+
+  const r1 = svc.setCaps({ cap5h: 12_345_678, capWeek: 98_765_432 })
+  okIf('setCaps 生效', r1.ok === true && r1.caps.h5 === 12_345_678 && rt._effectiveConfig().cap5h === 12_345_678)
+  eq('getCaps 读回', svc.getCaps().week, 98_765_432)
+
+  const bad = svc.setCaps({ cap5h: -1 })
+  eq('setCaps 拒绝非法输入', bad.ok, false)
+
+  // POST /set 路由
+  const res = makeRes()
+  await rt._route(makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/set`, body: JSON.stringify({ cap5h: 5_000_000 }) }), res)
+  eq('POST /set 200', res.status, 200)
+  eq('POST /set 生效', JSON.parse(res.body).caps.h5, 5_000_000)
+
+  const resBad = makeRes()
+  await rt._route(makeReq({ method: 'POST', url: `${ROUTE_PREFIX}/set`, body: '{oops' }), resBad)
+  eq('POST /set 坏 JSON → 400', resBad.status, 400)
+
+  // 落盘：新实例可见
+  rt._saveNow()
+  const rtB = createRation({ ctx: env.ctx, config: env.cfg })
+  rtB._loadState()
+  eq('跨插件改值跨实例保持', rtB._effectiveConfig().cap5h, 5_000_000)
 }
 
 // ---------------------------------------------------------------------------

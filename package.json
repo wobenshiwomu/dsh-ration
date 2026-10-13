@@ -1,6 +1,6 @@
 {
   "name": "dsh-ration",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness 插件：配给（ration）—— 自己给自己防沉迷的 5 小时/周 token 限额（刻度对标 Kimi：4000万/2亿），越线就不接新活",
   "keywords": [
     "dsh",

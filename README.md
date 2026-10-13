@@ -42,6 +42,8 @@ DSH 里没有"套餐额度"这回事，按 token 烧钱、无限续杯——很�
 - **越线拦截**：客户端在捕获层拦下输入框 Enter 与发送按钮；状态过期时自动 fail-open
   （不会因为插件故障挡住你干活）。
 - 状态持久化在 `$DSH_HOME/storages/dsh-ration/state.json`，账本默认保留 35 天。
+- **跨插件接口（v0.1.2）**：`ctx.provide('ration')` 服务（`setCaps` / `getCaps`）+ `POST /dsh-ration/set`
+  路由——供 [dsh-plan](https://github.com/wobenshiwomu/dsh-plan) 订阅后自动校准额度。
 
 ## 配置（profile 层可覆盖）
 
